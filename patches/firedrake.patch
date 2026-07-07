@@ -1,0 +1,365 @@
+diff --git a/.github/workflows/build.yml b/.github/workflows/build.yml
+index 37a4ab39a..7c1545fea 100644
+--- a/.github/workflows/build.yml
++++ b/.github/workflows/build.yml
+@@ -84,6 +84,7 @@ jobs:
+             --install defcon \
+             --install gadopt \
+             --install asQ \
++            --package-branch ufl update_replace_get_shape\
+             || (cat firedrake-install.log && /bin/false)
+       - name: Install test dependencies
+         run: |
+diff --git a/firedrake/adjoint_utils/blocks/function.py b/firedrake/adjoint_utils/blocks/function.py
+index 1d14e82c3..eca623829 100644
+--- a/firedrake/adjoint_utils/blocks/function.py
++++ b/firedrake/adjoint_utils/blocks/function.py
+@@ -52,7 +52,7 @@ class FunctionAssignBlock(Block):
+             if isinstance(block_variable.output, AdjFloat):
+                 try:
+                     # Adjoint of a broadcast is just a sum
+-                    return adj_inputs[0].dat.data_ro.sum()
++                    return AdjFloat(adj_inputs[0].dat.data_ro.sum())
+                 except AttributeError:
+                     # Catch the case where adj_inputs[0] is just a float
+                     return adj_inputs[0]
+diff --git a/firedrake/assemble.py b/firedrake/assemble.py
+index 5d0a4f233..b0f746ebb 100644
+--- a/firedrake/assemble.py
++++ b/firedrake/assemble.py
+@@ -345,7 +345,7 @@ class BaseFormAssembler(AbstractFormAssembler):
+     def allocation_integral_types(self):
+         if self._allocation_integral_types is None:
+             # Use the most conservative integration types.
+-            test, _ = self._form.arguments()
++            test, *_ = self._form.arguments()
+             if test.function_space().mesh().extruded:
+                 return ("interior_facet_vert", "interior_facet_horiz")
+             else:
+@@ -455,6 +455,14 @@ class BaseFormAssembler(AbstractFormAssembler):
+                     with lhs.dat.vec_ro as x, rhs.dat.vec_ro as y:
+                         res = x.dot(y)
+                     return res
++                elif isinstance(rhs, matrix.MatrixBase):
++                    petsc_mat = rhs.petscmat
++                    (row, col) = rhs.arguments()
++                    res = firedrake.Function(col.function_space())
++                    with lhs.dat.vec_ro as v_vec:
++                        with res.dat.vec as res_vec:
++                            petsc_mat.multTranspose(v_vec, res_vec)
++                    return res
+                 else:
+                     raise TypeError("Incompatible RHS for Action.")
+             else:
+@@ -678,7 +686,7 @@ class BaseFormAssembler(AbstractFormAssembler):
+         r"""Perform a preorder traversal to simplify and optimize the DAG.
+         Example: Let's consider F(u, N(u; v*); v) with N(u; v*) a base form operator.
+ 
+-                 We have: dFdu = \frac{\partial F}{\partial u} + Action(dFdN, dNdu)
++                 We have: dFdu = ∂F/∂u + Action(∂F/∂N, dN/du)
+                  Now taking the action on a rank-1 object w (e.g. Coefficient/Cofunction) results in:
+ 
+             (1) Action(Action(dFdN, dNdu), w)
+@@ -745,6 +753,16 @@ class BaseFormAssembler(AbstractFormAssembler):
+                            \
+                       dNdu(u; v1, v0*)
+ 
++            (8) Adjoint(Action(dFdN, dNdu))
++
++                 Adjoint                    Action
++                    |                        /   \
++                 Action       ----->    Adjoint  Adjoint  ----->   Action
++                  /   \                    |       |               /    \
++               dFdN   dNd                dNdu    dFdN           dNdu*   dFdN*
++
++            where dNdu* and dFdN* are the adjoints of dNdu and dFdN respectively.
++
+         It uses a recursive approach to reconstruct the DAG as we traverse it, enabling to take into account
+         various dag rotations/manipulations in expr.
+         """
+@@ -756,12 +774,25 @@ class BaseFormAssembler(AbstractFormAssembler):
+             # -- Case (1) -- #
+             # If left is Action and has a rank 2, then it is an action of a 2-form on a 2-form
+             if isinstance(left, ufl.Action) and is_rank_2(left):
+-                return ufl.action(left.left(), ufl.action(left.right(), right))
++                # Handle recursive cases such as `Action(Action(A, Action(B, C)), w)`,
++                # which becomes `Action(A, Action(B, Action(C, w)))`, where `A`, `B` and `C` are BaseForms,
++                # and `w` is a rank-1 object.
++                right = BaseFormAssembler.restructure_base_form(ufl.action(left.right(), right), visited)
++                return ufl.action(left.left(), right)
+             # -- Case (2) (except if left has only 1 argument, i.e. we have done case (5)) -- #
+             if isinstance(left, ufl.core.base_form_operator.BaseFormOperator) and is_rank_1(right) and len(left.arguments()) != 1:
+                 # Retrieve the highest numbered argument
+                 arg = max(left.arguments(), key=lambda v: v.number())
+-                return ufl.replace(left, {arg: right})
++                # Handle recursive cases such as `Action(B1[v0, v1*], Action(B2[w0, w1*], w))`,
++                # which becomes `B1[v0, B2[w0, w]])`, where `B1` and `B2` are BaseFormOperators,
++                # `v0`, `v1*`, `w0`, `w1*` are appropriate BaseArguments, and `w` is an appropriate rank-1 object.
++                right = BaseFormAssembler.restructure_base_form(right, visited)
++                # Replace arguments in argument slots (and not in operands!)
++                new_args = tuple(ufl.replace(a, {arg: right}) for a in left.argument_slots())
++                if isinstance(left, ufl.Interpolate):
++                    # Different API for Interpolate
++                    return left._ufl_expr_reconstruct_(*reversed(new_args))
++                return left._ufl_expr_reconstruct_(*left.ufl_operands, argument_slots=new_args)
+             # -- Case (3) -- #
+             if isinstance(left, ufl.Form) and is_rank_1(right):
+                 # 1) Replace the highest-numbered argument of left by right when needed
+@@ -781,18 +812,33 @@ class BaseFormAssembler(AbstractFormAssembler):
+                 new_args = [firedrake.Argument(a.function_space(), number=a.number()-1, part=a.part()) for a in other_args]
+                 replace_map.update(dict(zip(other_args, new_args)))
+                 # Replace arguments
+-                return ufl.replace(right, replace_map)
+-
+-        # -- Case (4) -- #
+-        if isinstance(expr, ufl.Adjoint) and isinstance(expr.form(), ufl.core.base_form_operator.BaseFormOperator):
+-            B = expr.form()
+-            u, v = B.arguments()
+-            # Let V1 and V2 be primal spaces, B: V1 -> V2 and B*: V2* -> V1*:
+-            # Adjoint(B(Argument(V1, 1), Argument(V2.dual(), 0))) = B(Argument(V1, 0), Argument(V2.dual(), 1))
+-            reordered_arguments = (firedrake.Argument(u.function_space(), number=v.number(), part=v.part()),
+-                                   firedrake.Argument(v.function_space(), number=u.number(), part=u.part()))
+-            # Replace arguments in argument slots
+-            return ufl.replace(B, dict(zip((u, v), reordered_arguments)))
++                # import ipdb; ipdb.set_trace()
++                # return ufl.replace(right, replace_map)
++                argument_slots = tuple(ufl.replace(a, replace_map) for a in right.argument_slots())
++                return right._ufl_expr_reconstruct_(*right.ufl_operands, argument_slots=argument_slots)
++
++        if isinstance(expr, ufl.Adjoint):
++            form = expr.form()
++            # -- Case (4) -- #
++            if isinstance(form, ufl.core.base_form_operator.BaseFormOperator):
++                u, v = form.arguments()
++                # Let V1 and V2 be primal spaces, B: V1 -> V2 and B*: V2* -> V1*:
++                # Adjoint(B(Argument(V1, 1), Argument(V2.dual(), 0))) = B(Argument(V1, 0), Argument(V2.dual(), 1))
++                reordered_arguments = (firedrake.Argument(u.function_space(), number=v.number(), part=v.part()),
++                                       firedrake.Argument(v.function_space(), number=u.number(), part=u.part()))
++                # Replace arguments in argument slots (and not in operands!)
++                mapping = dict(zip((u, v), reordered_arguments))
++                new_args = tuple(ufl.replace(a, mapping) for a in form.argument_slots())
++                if isinstance(form, ufl.Interpolate):
++                    # Different API for Interpolate
++                    return form._ufl_expr_reconstruct_(*reversed(new_args))
++                return form._ufl_expr_reconstruct_(*form.ufl_operands, argument_slots=new_args)
++            # -- Case (8) -- #
++            if isinstance(form, ufl.Action) and all(len(e.arguments()) == 2 for e in form.ufl_operands):
++                A, B = form.ufl_operands
++                A_adj = BaseFormAssembler.restructure_base_form(firedrake.adjoint(A), visited)
++                B_adj = BaseFormAssembler.restructure_base_form(firedrake.adjoint(B), visited)
++                return ufl.action(B_adj, A_adj)
+ 
+         # -- Case (5) -- #
+         if isinstance(expr, ufl.core.base_form_operator.BaseFormOperator) and not expr.arguments():
+@@ -818,10 +864,22 @@ class BaseFormAssembler(AbstractFormAssembler):
+             # Don't expand derivatives if `mat_type` is 'matfree'
+             # For "matfree", Form evaluation is delayed
+             expr = BaseFormAssembler.expand_derivatives_form(expr, form_compiler_parameters)
++        # => No restructuring needed for Form and slate.TensorBase
+         if not isinstance(expr, (ufl.form.Form, slate.TensorBase)):
+-            # => No restructuring needed for Form and slate.TensorBase
++            # Example of a DAG that requires at least 3 traversals to be restructured:
++            # -> `expr = Action(Adjoint(Action(∂F/∂N, Action(∂N/∂I, ∂I/∂u))), w)`
++            # The above DAG naturally arises when computing the adjoint model of a variational form
++            # containing an external operator `N(I(u); v*)`, where `I` is the interpolation operator and `u` a Function.
++            # The above DAG would be restructured as follows throughout the 3 traversals:
++            #    (8)+(4)                                                   (1)
++            # expr --> `Action(Action(Action(∂I/∂u*, ∂N/∂I*), ∂F/∂N*), w)` --> ...
++            #     (1)                                             (2)
++            # ... --> `Action(∂I/∂u*, Action(∂N/∂I*, ∂F/∂N*[w]))` --> ∂I/∂u*[(∂N/∂I*(∂F/∂N*[w], w0), v0)]
++            # where `w0` and `v0` are test functions in appropriate spaces, and where the argument slots notation `[⋅, ⋅]`
++            # indicates the arguments of the linear form considered.
+             expr = BaseFormAssembler.restructure_base_form_preorder(expr)
+             expr = BaseFormAssembler.restructure_base_form_postorder(expr)
++            expr = BaseFormAssembler.restructure_base_form_postorder(expr)
+         # Preprocessing the form makes a new object -> current form caching mechanism
+         # will populate `expr`'s cache which is now different than `original_expr`'s cache so we need
+         # to transmit the cache. All of this only holds when both are `ufl.Form` objects.
+diff --git a/firedrake/external_operators/ml_operator.py b/firedrake/external_operators/ml_operator.py
+index ed95b2a6d..c5a9db5c9 100644
+--- a/firedrake/external_operators/ml_operator.py
++++ b/firedrake/external_operators/ml_operator.py
+@@ -80,6 +80,9 @@ class MLOperator(AbstractExternalOperator):
+     def assemble_jacobian_adjoint_action(self, *args, **kwargs):
+         """Assemble the action of the Jacobian adjoint using the AD engine of the ML framework."""
+         w = self.argument_slots()[0]
++        # Derivative with respect to the parameters of the ML model
++        if self.derivatives[-1] == 1:
++            return self._backward(w)
+         return self._vjp(w)
+ 
+     # -- ML framework-specific methods -- #
+diff --git a/firedrake/interpolation.py b/firedrake/interpolation.py
+index 7b9a1890a..e71cda40a 100644
+--- a/firedrake/interpolation.py
++++ b/firedrake/interpolation.py
+@@ -91,8 +91,12 @@ class Interpolate(ufl.Interpolate):
+             v = Argument(v.dual(), 0)
+ 
+         # Get the primal space (V** = V)
+-        vv = v if not isinstance(v, ufl.Form) else v.arguments()[0]
+-        self._function_space = vv.function_space().dual()
++        if isinstance(v, ufl.BaseForm):
++            arg, *_ = v.arguments()
++            function_space = arg.function_space()
++        else:
++            function_space = v.function_space().dual()
++        self._function_space = function_space
+         super().__init__(expr, v)
+ 
+         # -- Interpolate data (e.g. `subset` or `access`) -- #
+diff --git a/firedrake/ml/pytorch/ml_operator.py b/firedrake/ml/pytorch/ml_operator.py
+index 031b70460..0cb0d0b07 100644
+--- a/firedrake/ml/pytorch/ml_operator.py
++++ b/firedrake/ml/pytorch/ml_operator.py
+@@ -96,9 +96,11 @@ class PytorchOperator(MLOperator):
+             return torch.unsqueeze(inputs, self.inputs_format)
+         return inputs
+ 
+-    def _post_forward_callback(self, y_P):
++    def _post_forward_callback(self, y_P, dual=False):
+         """Callback function to convert the PyTorch output of the ML model to a Firedrake function."""
+         space = self.ufl_function_space()
++        if dual:
++            space = space.dual()
+         return from_torch(y_P, space)
+ 
+     # -- PyTorch routines for computing AD based quantities via `torch.autograd.functional` -- #
+@@ -109,16 +111,27 @@ class PytorchOperator(MLOperator):
+     def _vjp(self, y):
+         """Implement the vector-Jacobian product (VJP) for a given vector `y`."""
+         model = self.model
+-        x = self._pre_forward_callback(*self.ufl_operands)
++        x = self._pre_forward_callback(*self.ufl_operands[:-1])
+         y_P = self._pre_forward_callback(y)
+         _, vjp = torch_func.vjp(lambda x: model(x), x, y_P)
+-        vjp_F = self._post_forward_callback(vjp)
++        vjp_F = self._post_forward_callback(vjp, dual=True)
+         return vjp_F
+ 
++    def _backward(self, y):
++        model = self.model
++        x = self._pre_forward_callback(*self.ufl_operands[:-1])
++        y_P = self._pre_forward_callback(y)
++        with torch.set_grad_enabled(True):
++            output = model(x)
++        output.backward(y_P)
++        dummy_output = self._pre_forward_callback(self.ufl_operands[-1])
++        backward_F = self._post_forward_callback(dummy_output, dual=True)
++        return backward_F
++
+     def _jvp(self, z):
+         """Implement the Jacobian-vector product (JVP) for a given vector `z`."""
+         model = self.model
+-        x = self._pre_forward_callback(*self.ufl_operands)
++        x = self._pre_forward_callback(*self.ufl_operands[:-1])
+         z_P = self._pre_forward_callback(z)
+         _, jvp = torch_func.jvp(lambda x: model(x), x, z_P)
+         jvp_F = self._post_forward_callback(jvp)
+@@ -129,7 +142,7 @@ class PytorchOperator(MLOperator):
+         # Get the model
+         model = self.model
+         # Don't unsqueeze so that we end up with a rank 2 tensor
+-        x = self._pre_forward_callback(*self.ufl_operands, unsqueeze=False)
++        x = self._pre_forward_callback(*self.ufl_operands[:-1], unsqueeze=False)
+         jac = torch_func.jacobian(lambda x: model(x), x)
+ 
+         # For big matrices, assembling the Jacobian is not a good idea and one should instead
+@@ -149,10 +162,11 @@ class PytorchOperator(MLOperator):
+         model = self.model
+ 
+         # Get the input operands
+-        ops = self.ufl_operands
++        ops = self.ufl_operands[:-1]
+ 
+         # By default PyTorch annotation is on (i.e. equivalent to `with torch.enable_grad()`)
+         with torch.set_grad_enabled(self.torch_grad_enabled):
++
+             # Pre forward callback
+             x_P = self._pre_forward_callback(*ops)
+ 
+diff --git a/tests/regression/test_assemble_baseform.py b/tests/regression/test_assemble_baseform.py
+index db2f7278d..b0a34c195 100644
+--- a/tests/regression/test_assemble_baseform.py
++++ b/tests/regression/test_assemble_baseform.py
+@@ -1,6 +1,7 @@
+ import pytest
+ import numpy as np
+ from firedrake import *
++from firedrake.__future__ import interpolate
+ from firedrake.assemble import BaseFormAssembler, get_assembler
+ from firedrake.utils import ScalarType
+ import ufl
+@@ -155,7 +156,8 @@ def test_zero_form(M, f, one):
+     assert abs(zero_form - 0.5 * np.prod(f.ufl_shape)) < 1.0e-12
+ 
+ 
+-def test_preprocess_form(M, a, f):
++def test_preprocess_form_rank2_simplification(M, a, f):
++    """Check case (1) in BaseFormAssembler.preprocess_form."""
+     from ufl.algorithms import expand_indices, expand_derivatives
+ 
+     expr = action(action(M, M), f)
+@@ -172,6 +174,62 @@ def test_preprocess_form(M, a, f):
+         pass
+ 
+ 
++def test_preprocess_form_adjoint_simplification(f):
++    """Check cases (1), (2), (4), and (8) in BaseFormAssembler.preprocess_form."""
++    from ufl.algorithms import expand_indices, expand_derivatives
++
++    V = f.function_space()
++
++    try:
++        # I(f, v*)
++        I = interpolate(f, V)
++    except NotImplementedError:
++        # Interpolation is not implemented for certain spaces.
++        I = f
++
++    # N(I(f); v*)
++    N = point_expr(lambda x: x, function_space=V)
++    N = N(I)
++    # Action(∂N(I(f); v1, v*)/∂I, ∂I/∂f) = Action(∂N(I(f); v1, v*)/∂I, I(v1, v*))
++    dNdf = expand_derivatives(derivative(N, f))
++
++    # F = <u, v> * dx
++    u = TrialFunction(V)
++    v = TestFunction(V)
++    dFdN = inner(u, v) * dx
++
++    # Action(Adjoint(Action(F, dNdf)), df)
++    w = Function(V)
++    expr = action(adjoint(action(dFdN, dNdf)), w)
++
++    # BaseForm preprocessing:
++    #                                                       (8)+(4)                                                   (1)
++    # Action(Adjoint(Action(∂F/∂N, Action(∂N/∂I, ∂I/∂u))), w) --> `Action(Action(Action(∂I/∂u*, ∂N/∂I*), ∂F/∂N*), w)` --> ...
++    #     (1)                                             (2)
++    # ... --> `Action(∂I/∂u*, Action(∂N/∂I*, ∂F/∂N*[w]))` --> ∂I/∂u*[(∂N/∂I*(∂F/∂N*[w], w0), v0)]
++    # where `w0` and `v0` are test functions in appropriate spaces, and where the argument slots notation `[⋅, ⋅]`
++    expr = BaseFormAssembler.preprocess_base_form(expr)
++
++    # Compare preprocessed form with expected result => this requires expanding indices!
++    try:
++        # Expanding indices is needed to match equal (different MultiIndex used for both).
++        dF = action(adjoint(dFdN), w)
++        dN = N._ufl_expr_reconstruct_(I, derivatives=(1,), argument_slots=(expand_indices(dF), v))
++        # Reconstruct the expected preprocessed form
++        expected = I._ufl_expr_reconstruct_(v, dN)
++
++        # Expanding indices for the preprocessed form
++        dN, v = expr.argument_slots()
++        dF, w = dN.argument_slots()
++        dN = dN._ufl_expr_reconstruct_(*dN.ufl_operands, argument_slots=(expand_indices(dF), w))
++        expr = expr._ufl_expr_reconstruct_(v, dN)
++
++        assert expr == expected
++    except (KeyError, NotImplementedError):
++        # Index expansion doesn't seem to play well with tensor elements.
++        pass
++
++
+ def test_tensor_copy(a, M):
+ 
+     # 1-form tensor

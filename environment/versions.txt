@@ -1,0 +1,36 @@
+FEML reproducibility — pinned software provenance
+==================================================
+
+Runtime used for the paper's experiments:
+  python      3.11.10   (CPython, macOS arm64)
+  petsc       3.21.3
+  petsc4py    3.21.3
+  torch       2.4.1
+  numpy       1.26.4
+  scipy       1.14.1
+
+Firedrake full version string as installed: 0.13.0+6113.g3c6a089a8
+
+Firedrake stack. "base" is the exact PUBLIC commit this archive pins to; patched
+components are reproduced by checking out the base commit and applying the matching
+file in ../patches/ (see patches/MANIFEST.md).
+
+PATCHED (check out the base commit, then apply the patch):
+  firedrake   base   815bc4b1eba1532ea3cac90d881e7cd66f2788bd
+              repo   https://github.com/firedrakeproject/firedrake
+              note   permanent master ancestor (merge-base of the AD-support work and
+                     master); patch layers the full ML-operator AD support on top
+              patch  patches/firedrake.patch
+  ufl         base   c1a8afb10bbde3c345d61a78b7f249f039dc6690   (master)
+              repo   https://github.com/firedrakeproject/ufl
+              patch  patches/ufl.patch
+  pyadjoint   base   92121af97711be88ff6d7994c0c7469129b2fb25   (master)
+              repo   https://github.com/dolfin-adjoint/pyadjoint
+              patch  patches/pyadjoint.patch
+
+STOCK (public commits, no patch needed):
+  PyOP2       b84b7708   https://github.com/OP2/PyOP2
+  fiat        c073ac5    https://github.com/firedrakeproject/fiat
+  FInAT       b65720d    https://github.com/FInAT/FInAT
+  loopy       d9876d83   https://github.com/firedrakeproject/loopy
+  ngsPETSc    7afc820    https://github.com/NGSolve/ngsPETSc
