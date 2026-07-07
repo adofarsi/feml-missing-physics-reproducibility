@@ -1,0 +1,17 @@
+diff --git a/pyadjoint/block_variable.py b/pyadjoint/block_variable.py
+index e252b0e..0870150 100644
+--- a/pyadjoint/block_variable.py
++++ b/pyadjoint/block_variable.py
+@@ -25,7 +25,11 @@ class BlockVariable(object):
+         if self.adj_value is None:
+             self.adj_value = val
+         else:
+-            self.adj_value += val
++            try:
++                self.adj_value += val
++            except:
++                val_adj = val.riesz_representation(riesz_map="l2")
++                self.adj_value += val_adj
+ 
+     def add_tlm_output(self, val):
+         if self.tlm_value is None:

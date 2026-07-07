@@ -1,0 +1,212 @@
+diff --git a/test/test_external_operator.py b/test/test_external_operator.py
+index 0cdebb42..b25f963f 100644
+--- a/test/test_external_operator.py
++++ b/test/test_external_operator.py
+@@ -5,8 +5,8 @@ __date__ = "2019-03-26"
+ 
+ import pytest
+ 
+-from ufl import (Action, Argument, Coefficient, Constant, Form, FunctionSpace, Mesh, TestFunction, TrialFunction,
+-                 action, adjoint, cos, derivative, dx, inner, sin, triangle)
++from ufl import (Action, Argument, Coargument, Coefficient, Constant, Form, FunctionSpace, Matrix, Mesh, TestFunction, TrialFunction,
++                 action, adjoint, cos, derivative, dx, inner, replace, sin, triangle)
+ from ufl.algorithms import expand_derivatives
+ from ufl.algorithms.apply_derivatives import apply_derivatives
+ from ufl.core.external_operator import ExternalOperator
+@@ -242,7 +242,7 @@ def get_external_operators(form_base):
+     elif isinstance(form_base, BaseForm):
+         return form_base.base_form_operators()
+     else:
+-        raise ValueError('Expecting FormBase argument!')
++        raise ValueError('Expecting BaseForm argument!')
+ 
+ 
+ def test_adjoint_action_jacobian(V1, V2, V3):
+@@ -318,16 +318,16 @@ def test_adjoint_action_jacobian(V1, V2, V3):
+             dFdu_adj = adjoint(dFdu)
+             dFdm_adj = adjoint(dFdm)
+ 
+-            assert dFdu_adj.arguments() == (u_hat(n_arg),) + v_F
+-            assert dFdm_adj.arguments() == (m_hat(n_arg),) + v_F
++            assert dFdu_adj.arguments() == (TestFunction(V1), TrialFunction(V))
++            assert dFdm_adj.arguments() == (TestFunction(V2), TrialFunction(V))
+ 
+             # Action of the adjoint
+-            q = Coefficient(v_F[0].ufl_function_space())
++            q = Coefficient(V)
+             action_dFdu_adj = action(dFdu_adj, q)
+             action_dFdm_adj = action(dFdm_adj, q)
+ 
+-            assert action_dFdu_adj.arguments() == (u_hat(n_arg),)
+-            assert action_dFdm_adj.arguments() == (m_hat(n_arg),)
++            assert action_dFdu_adj.arguments() == (TestFunction(V1),)
++            assert action_dFdm_adj.arguments() == (TestFunction(V2),)
+ 
+ 
+ def test_multiple_external_operators(V1, V2):
+@@ -446,3 +446,28 @@ def test_multiple_external_operators(V1, V2):
+ 
+     dFdu = expand_derivatives(derivative(F, u))
+     assert dFdu == dFdu_partial + Action(dFdN1_partial, dN1du) + Action(dFdN5_partial, dN5du)
++
++def test_replace(V1):
++    u = Coefficient(V1, count=0)
++    N = ExternalOperator(u, function_space=V1)
++
++    # dN(u; uhat, v*)
++    dN = expand_derivatives(derivative(N, u))
++    vstar, uhat = dN.arguments()
++    assert isinstance(vstar, Coargument)
++
++    # Replace v* by a Form
++    v = TestFunction(V1)
++    F = inner(u, v) * dx
++    G = replace(dN, {vstar: F})
++
++    dN_replaced = dN._ufl_expr_reconstruct_(u, argument_slots=(F, uhat))
++    assert G == dN_replaced
++
++    # Replace v* by an Action
++    M = Matrix(V1, V1)
++    A = Action(M, u)
++    G = replace(dN, {vstar: A})
++
++    dN_replaced = dN._ufl_expr_reconstruct_(u, argument_slots=(A, uhat))
++    assert G == dN_replaced
+\ No newline at end of file
+diff --git a/ufl/action.py b/ufl/action.py
+index 2401e05e..2fd3a259 100644
+--- a/ufl/action.py
++++ b/ufl/action.py
+@@ -124,7 +124,7 @@ class Action(BaseForm):
+         from ufl.domain import join_domains
+ 
+         # Collect domains
+-        self._domains = join_domains(chain.from_iterable(e.ufl_domains() for e in self.ufl_operands))
++        self._domains = join_domains(chain.from_iterable(e.ufl_domain() for e in self.ufl_operands))
+ 
+     def equals(self, other):
+         """Check if two Actions are equal."""
+diff --git a/ufl/adjoint.py b/ufl/adjoint.py
+index 38f00387..d4bc7f27 100644
+--- a/ufl/adjoint.py
++++ b/ufl/adjoint.py
+@@ -82,7 +82,11 @@ class Adjoint(BaseForm):
+ 
+     def _analyze_form_arguments(self):
+         """The arguments of adjoint are the reverse of the form arguments."""
+-        self._arguments = self._form.arguments()[::-1]
++        reversed_args = self._form.arguments()[::-1]
++        # Canonical numbering for arguments that is consistent with other BaseForm objects.
++        self._arguments = tuple(
++            type(arg)(arg.ufl_function_space(), number=i) for i, arg in enumerate(reversed_args)
++        )
+         self._coefficients = self._form.coefficients()
+ 
+     def _analyze_domains(self):
+diff --git a/ufl/algorithms/replace.py b/ufl/algorithms/replace.py
+index e96ecc57..ecc4c1fc 100644
+--- a/ufl/algorithms/replace.py
++++ b/ufl/algorithms/replace.py
+@@ -10,7 +10,7 @@
+ 
+ from ufl.algorithms.analysis import has_exact_type
+ from ufl.algorithms.map_integrands import map_integrand_dags
+-from ufl.classes import CoefficientDerivative, Form
++from ufl.classes import BaseForm, CoefficientDerivative
+ from ufl.constantvalue import as_ufl
+ from ufl.core.external_operator import ExternalOperator
+ from ufl.core.interpolate import Interpolate
+@@ -28,7 +28,7 @@ class Replacer(MultiFunction):
+         # One can replace Coarguments by 1-Forms
+         def get_shape(x):
+             """Get the shape of an object."""
+-            if isinstance(x, Form):
++            if isinstance(x, BaseForm):
+                 return x.arguments()[0].ufl_shape
+             return x.ufl_shape
+ 
+diff --git a/ufl/core/base_form_operator.py b/ufl/core/base_form_operator.py
+index a136244c..95e3323d 100644
+--- a/ufl/core/base_form_operator.py
++++ b/ufl/core/base_form_operator.py
+@@ -123,14 +123,21 @@ class BaseFormOperator(Operator, BaseForm, Counted):
+     @property
+     def ufl_shape(self):
+         """Return the UFL shape of the coefficient.produced by the operator."""
+-        return self.arguments()[0]._ufl_shape
++        arg, *_ = self.argument_slots()
++        if isinstance(arg, BaseForm):
++            arg, *_ = arg.arguments()
++        return arg._ufl_shape
+ 
+     def ufl_function_space(self):
+         """Return the function space associated to the operator.
+ 
+         I.e. return the dual of the base form operator's Coargument.
+         """
+-        return self.arguments()[0]._ufl_function_space.dual()
++        arg, *_ = self.argument_slots()
++        if isinstance(arg, BaseForm):
++            arg, *_ = arg.arguments()
++            return arg._ufl_function_space
++        return arg._ufl_function_space.dual()
+ 
+     def _ufl_expr_reconstruct_(self, *operands, function_space=None, derivatives=None, argument_slots=None):
+         """Return a new object of the same type with new operands."""
+diff --git a/ufl/core/interpolate.py b/ufl/core/interpolate.py
+index 86198c68..91fc5016 100644
+--- a/ufl/core/interpolate.py
++++ b/ufl/core/interpolate.py
+@@ -8,13 +8,14 @@
+ #
+ # Modified by Nacime Bouziani, 2021-2022
+ 
++from ufl.action import Action
+ from ufl.argument import Argument, Coargument
+ from ufl.coefficient import Cofunction
+ from ufl.constantvalue import as_ufl
+ from ufl.core.base_form_operator import BaseFormOperator
+ from ufl.core.ufl_type import ufl_type
+ from ufl.duals import is_dual
+-from ufl.form import Form
++from ufl.form import BaseForm, Form
+ from ufl.functionspace import AbstractFunctionSpace
+ 
+ 
+@@ -35,7 +36,7 @@ class Interpolate(BaseFormOperator):
+                 defined on the dual of the FunctionSpace to interpolate into.
+         """
+         # This check could be more rigorous.
+-        dual_args = (Coargument, Cofunction, Form)
++        dual_args = (Coargument, Cofunction, Form, Action, BaseFormOperator)
+ 
+         if isinstance(v, AbstractFunctionSpace):
+             if is_dual(v):
+@@ -51,8 +52,11 @@ class Interpolate(BaseFormOperator):
+         # Reversed order convention
+         argument_slots = (v, expr)
+         # Get the primal space (V** = V)
+-        vv = v if not isinstance(v, Form) else v.arguments()[0]
+-        function_space = vv.ufl_function_space().dual()
++        if isinstance(v, BaseForm):
++            arg, *_ = v.arguments()
++            function_space = arg.ufl_function_space()
++        else:
++            function_space = v.ufl_function_space().dual()
+         # Set the operand as `expr` for DAG traversal purpose.
+         operand = expr
+         BaseFormOperator.__init__(self, operand, function_space=function_space,
+diff --git a/ufl/form.py b/ufl/form.py
+index 3f85b709..d9504e4a 100644
+--- a/ufl/form.py
++++ b/ufl/form.py
+@@ -137,7 +137,7 @@ class BaseForm(object, metaclass=UFLType):
+         if isinstance(other, (int, float)) and other == 0:
+             # Allow adding 0 or 0.0 as a no-op, needed for sum([a,b])
+             return self
+-        elif isinstance(other, Zero) and not (other.ufl_shape or other.ufl_free_indices):
++        elif isinstance(other, Zero):
+             # Allow adding ufl Zero as a no-op, needed for sum([a,b])
+             return self
+ 
