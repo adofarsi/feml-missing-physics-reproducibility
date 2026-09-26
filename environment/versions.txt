@@ -1,36 +1,35 @@
-FEML reproducibility — pinned software provenance
-==================================================
+FEML — release installation and validation notes
+================================================
 
-Runtime used for the paper's experiments:
-  python      3.11.10   (CPython, macOS arm64)
-  petsc       3.21.3
-  petsc4py    3.21.3
-  torch       2.4.1
-  numpy       1.26.4
-  scipy       1.14.1
+Installation
+------------
+Use the standard real-valued Firedrake release with ML model-parameter adjoints
+(model_parameters=True), its default PETSc configuration, PyTorch, and PySR 1.5.10.
+Follow README.md; no component checkouts or source patches are required.
+PySR 1.5.10 is retained because example 06 uses its 1.x interface. Julia is managed
+by PySR. PyTorch 2.4.1 was used for validation. The standard instructions let pip
+select a PyTorch version compatible with your Python installation.
 
-Firedrake full version string as installed: 0.13.0+6113.g3c6a089a8
+Validation record, 25 September 2026
+-----------------------------------
+All six scripts completed at full paper settings on Linux ARM64 with Python 3.12.3
+and PyTorch 2.4.1. Their source is unchanged from those runs. The validation used
+Firedrake commit 476c5d23442cd9085c3a2bf78d2c997a8c59c9bc, based on main commit
+a0af36be23723a4e134874c62e8b564d854ce2a2, before release publication. These hashes
+record the validation environment; they are not installation requirements.
 
-Firedrake stack. "base" is the exact PUBLIC commit this archive pins to; patched
-components are reproduced by checking out the base commit and applying the matching
-file in ../patches/ (see patches/MANIFEST.md).
+The full symbolic search used PySR 1.5.10 and the original Julia 1.12.5 environment.
+It reproduced the reference expression and saved scores exactly. Julia 1.12.5 is
+outside PySR 1.5.10's declared version range; that archived combination is not
+required for the standard setup. PySR's automatically resolved Julia 1.11.9 also
+passed a short search, but the full paper search was not repeated with that runtime.
+A different Julia/package resolution can select a different symbolic expression.
 
-PATCHED (check out the base commit, then apply the patch):
-  firedrake   base   815bc4b1eba1532ea3cac90d881e7cd66f2788bd
-              repo   https://github.com/firedrakeproject/firedrake
-              note   permanent master ancestor (merge-base of the AD-support work and
-                     master); patch layers the full ML-operator AD support on top
-              patch  patches/firedrake.patch
-  ufl         base   c1a8afb10bbde3c345d61a78b7f249f039dc6690   (master)
-              repo   https://github.com/firedrakeproject/ufl
-              patch  patches/ufl.patch
-  pyadjoint   base   92121af97711be88ff6d7994c0c7469129b2fb25   (master)
-              repo   https://github.com/dolfin-adjoint/pyadjoint
-              patch  patches/pyadjoint.patch
+Saved numerical outputs closely matched the references. Finite-difference gradient
+checks met a relative-error threshold of 1e-3 for load control, shear hardening and
+thermal training. Displacement and shear-damage gradients showed sensitivity to
+the original nonlinear solver tolerances; stricter diagnostic solves improved
+agreement. The paper's solver settings were retained in the scripts.
 
-STOCK (public commits, no patch needed):
-  PyOP2       b84b7708   https://github.com/OP2/PyOP2
-  fiat        c073ac5    https://github.com/firedrakeproject/fiat
-  FInAT       b65720d    https://github.com/FInAT/FInAT
-  loopy       d9876d83   https://github.com/firedrakeproject/loopy
-  ngsPETSc    7afc820    https://github.com/NGSolve/ngsPETSc
+The original custom-stack versions and patches are preserved in the v1.0.0 archive:
+https://doi.org/10.5281/zenodo.21251672

@@ -3,7 +3,6 @@ import numpy as np
 import torch
 from firedrake import *
 from firedrake.ml.pytorch import ml_operator, fem_operator, to_torch
-from firedrake.__future__ import interpolate
 from firedrake.adjoint import (annotate_tape, continue_annotation, stop_annotating,
                                set_working_tape, get_working_tape, Control, ReducedFunctional)
 
@@ -183,12 +182,12 @@ def main():
         model_sy.fc2.bias.fill_(-8.0)
     Q = FunctionSpace(mesh, "DG", 0)
     R = FunctionSpace(mesh, "R", 0)
-    ml_op_sy = ml_operator(model_sy, function_space=Q)
+    ml_op_sy = ml_operator(model_sy, function_space=Q, model_parameters=True)
     ml_par_sy = Function(R).assign(0.0)
     ml_par_sy_t = to_torch(ml_par_sy, requires_grad=True)
 
     model_Hp = IntegralHTangent(model_sy).double()
-    ml_op_Hp = ml_operator(model_Hp, function_space=Q)
+    ml_op_Hp = ml_operator(model_Hp, function_space=Q, model_parameters=True)
     ml_par_Hp = Function(R).assign(0.0)
     ml_par_Hp_t = to_torch(ml_par_Hp, requires_grad=True)
 
@@ -197,7 +196,7 @@ def main():
     model_E.eval()
     for p in model_E.parameters():
         p.requires_grad_(False)
-    ml_op_E = ml_operator(model_E, function_space=Q)
+    ml_op_E = ml_operator(model_E, function_space=Q, model_parameters=True)
     ml_par_E = Function(R).assign(0.0)
 
     ml_op = [ml_op_sy, ml_op_Hp]

@@ -7,90 +7,107 @@ Reproducibility archive for the paper:
 > **Missing Physics Discovery through Fully Differentiable Finite Element-Based Machine Learning**
 > Ado Farsi, Nacime Bouziani, David A. Ham.
 
-The numerical experiments in the paper were run with a **customised Firedrake stack**: a
-small set of patches on top of specific *public* commits of **Firedrake**, **UFL**, and
-**pyadjoint** that add automatic-differentiation support for machine-learned operators
-(the base-form / `ml_operator` pathway used throughout the paper). A stock Firedrake
-install therefore cannot run the examples as-is. These changes are being merged upstream;
-until they land, the patches archived here reproduce the exact code that was used.
+The examples use the standard Firedrake release with automatic-differentiation
+support for PyTorch model parameters through `ml_operator`. No source patches or
+custom Firedrake, UFL or pyadjoint checkouts are needed.
 
-## Contents
+## Installation
 
-| Path | What |
-|---|---|
-| `patches/` | Source patches against pinned public commits. See `patches/MANIFEST.md`. |
-| `environment/versions.txt` | Pinned component commits and the exact package versions used. |
-| `scripts/` | Experiment scripts for the paper's examples — **added separately.** |
-| `LICENSE` | MIT. |
+Clone this branch:
 
-## Software provenance
+```sh
+git clone --branch after-firedrake-release https://github.com/adofarsi/feml-missing-physics-reproducibility.git
+cd feml-missing-physics-reproducibility
+```
 
-| Component | Pinned public base | Repository | Patched? |
-|---|---|---|---|
-| Firedrake | `815bc4b1` (permanent `master` ancestor) | firedrakeproject/firedrake | ✔ `patches/firedrake.patch` |
-| UFL | `c1a8afb1` (master) | firedrakeproject/ufl | ✔ `patches/ufl.patch` |
-| pyadjoint | `92121af9` (master) | dolfin-adjoint/pyadjoint | ✔ `patches/pyadjoint.patch` |
-| PyOP2, FIAT, FInAT, loopy, ngsPETSc | see `environment/versions.txt` | firedrakeproject/* etc. | ✘ (stock) |
+### Native installation
 
-Runtime used for the paper: **Python 3.11.10, PETSc/petsc4py 3.21.3, PyTorch 2.4.1,
-NumPy 1.26.4, SciPy 1.14.1** (macOS, Apple silicon). Full base-commit hashes and the exact
-files each patch touches are in `patches/MANIFEST.md` and `environment/versions.txt`.
+Install the standard, real-valued Firedrake release by following the
+[official installation instructions](https://www.firedrakeproject.org/install.html).
+Use its default PETSc configuration, which includes the MUMPS solver required by
+the examples. Activate the Firedrake virtual environment and install PyTorch and
+PySR into that environment:
 
-## Reproducing the environment
+```sh
+python -m pip install torch "pysr==1.5.10"
+```
 
-1. **Install the Firedrake stack at the pinned commits.** Follow the official Firedrake
-   installation instructions, but check out the pinned commits from
-   `environment/versions.txt` — in particular `firedrake` → `815bc4b1`
-   (a permanent `master` ancestor), `ufl` → `c1a8afb1`, `pyadjoint` → `92121af9`.
+[PySR](https://pysr.ai/v1.5.9/) is needed only for example 06. It installs its Julia runtime and dependencies
+on first use, so that first run needs an internet connection and additional setup
+time. The script uses the PySR 1.x interface; keep the version shown above.
 
-2. **Apply the patches** at the root of each component checkout:
+### Docker alternative
 
-   ```sh
-   cd <firedrake-src>/firedrake && git apply --check <this-repo>/patches/firedrake.patch && git apply <this-repo>/patches/firedrake.patch
-   cd <firedrake-src>/ufl       && git apply --check <this-repo>/patches/ufl.patch       && git apply <this-repo>/patches/ufl.patch
-   cd <firedrake-src>/pyadjoint && git apply --check <this-repo>/patches/pyadjoint.patch && git apply <this-repo>/patches/pyadjoint.patch
-   ```
+With Docker installed, start the official release image from the repository root:
 
-   The `--check` dry run confirms a clean apply before modifying anything. The patches are
-   plain `git diff` output and apply at the pinned base commits.
+```sh
+docker run --rm -it --pull=always \
+  --mount "type=bind,src=$(pwd),dst=/workspace/feml" \
+  --workdir /workspace/feml \
+  firedrakeproject/firedrake-vanilla-default:latest bash
+```
 
-3. **Verify** the customised build imports and that the ML-operator interface is available
-   (the exact imports used are shown at the top of each script in `scripts/`).
+Inside the container, create a virtual environment that uses the installed
+Firedrake, then add PyTorch and PySR:
+
+```sh
+python3 -m venv --system-site-packages /opt/feml-venv
+. /opt/feml-venv/bin/activate
+python -m pip install torch "pysr==1.5.10"
+```
+
+Then use the run commands below in that container. Outputs are saved to the mounted
+repository on the host. Allocate at least 16 GiB of memory to Docker and run the
+examples sequentially; the thermal example used about 9 GiB during validation.
+See Firedrake's [Docker instructions](https://www.firedrakeproject.org/install.html#docker)
+for platform-specific setup.
 
 ## Running the examples
 
-Each example is a single script in `scripts/`, run from the archive root with the patched
-Firedrake environment active. Meshes and datasets are read from `data/`; all outputs
-(trained operators, fields, loss histories) are written under `outputs/` and are not
-version-controlled. Every run is deterministic (fixed seeds).
-
-Some examples reuse a previously trained operator, so run them in this order:
+Run from the repository root with the Firedrake environment active, or inside the
+container. These commands use the full paper settings and run on one MPI rank:
 
 ```sh
-python scripts/01_displacement_controlled.py         # learns E(kappa) from reaction forces
-python scripts/02_load_controlled_brazilian_disc.py  # learns sigma_y(p); requires 01
-python scripts/03_zero_shot_torsion.py               # deploys 01+02 zero-shot; requires 01, 02
-python scripts/04_shear_coupon.py                    # learns hardening + damage from real data
-python scripts/05_thermal_conductivity.py            # learns k(T) from temperature fields
-python scripts/06_symbolic_regression.py             # distils a closed form; requires 05
+export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+python scripts/01_displacement_controlled.py
+python scripts/02_load_controlled_brazilian_disc.py
+python scripts/03_zero_shot_torsion.py
+python scripts/04_shear_coupon.py
+python scripts/05_thermal_conductivity.py
+python scripts/06_symbolic_regression.py
 ```
 
-Examples 04 and 05 are independent of 01–03. Shared neural-operator definitions live in
-`scripts/operators.py`; the shear-coupon solver and targets are in `scripts/shear_solver.py`
-and `scripts/shear_targets.py`.
+| Example | Result | Requires |
+|---|---|---|
+| 01 displacement | Learned stiffness E(κ) | — |
+| 02 load controlled | Learned yield stress σ_y(p) | 01 |
+| 03 zero-shot torsion | Displacement, stress and plastic-strain fields and errors | 01 and 02 |
+| 04 shear coupon | Learned hardening and damage, and force-fit RMSE | — |
+| 05 thermal | Learned conductivity k(T) | — |
+| 06 symbolic regression | Closed-form conductivity law | 05 |
 
-### Reproduced results
+Examples 04 and 05 are independent of 01–03. Meshes and experimental data are read
+from `data/`; generated data, trained models, histories and fields are written
+under `outputs/`, which is not version-controlled. Full training takes several
+hours. The scripts retain the paper's meshes, epoch counts, architectures and
+solver settings.
 
-Each example and the quantity it produces:
+Fixed random seeds support repeatability within an environment. Numerical results
+and the expression selected by symbolic regression can vary with library versions
+and platform. [Environment and validation notes](environment/versions.txt) record
+the versions used to check these scripts and the scope of those checks.
 
-| Example | Quantity |
+## Contents
+
+| Path | Contents |
 |---|---|
-| 01 displacement | learned E(κ) |
-| 02 load-controlled | learned σ_y(p) |
-| 03 zero-shot torsion | max abs displacement / von Mises / plastic strain |
-| 04 shear coupon | fit RMSE |
-| 05 thermal | learned k(T) |
-| 06 symbolic regression | closed-form law |
+| `scripts/` | Six examples and shared model, solver and target definitions |
+| `data/` | Meshes and experimental datasets |
+| `environment/versions.txt` | Dependency and validation notes |
+| `LICENSE` | MIT license |
+
+The original patched-stack provenance remains available in the
+[v1.0.0 archive](https://doi.org/10.5281/zenodo.21251672).
 
 ## Data availability
 
@@ -106,9 +123,9 @@ Each example and the quantity it produces:
 
 - **Firedrake software:** D. A. Ham et al., *Firedrake User Manual*, First edition, Imperial
   College London et al. (2023), doi:[10.25561/104839](https://doi.org/10.25561/104839).
-- **This archive** (patches + scripts): A. Farsi, N. Bouziani, D. A. Ham, Zenodo (2026),
+- **This archive:** A. Farsi, N. Bouziani, D. A. Ham, Zenodo (2026),
   doi:[10.5281/zenodo.21251671](https://doi.org/10.5281/zenodo.21251671) (all versions; the
-  v1.0.0 release is doi:[10.5281/zenodo.21251672](https://doi.org/10.5281/zenodo.21251672)).
+  original v1.0.0 release is doi:[10.5281/zenodo.21251672](https://doi.org/10.5281/zenodo.21251672)).
 
 ## License
 

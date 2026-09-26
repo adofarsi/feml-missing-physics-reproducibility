@@ -1,7 +1,6 @@
 import os
 
 from firedrake import *
-from firedrake.__future__ import interpolate
 from firedrake.ml.pytorch import ml_operator
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -20,8 +19,8 @@ def build_hardening_ml_ops(mesh, model_sy, model_Hp):
     Q = FunctionSpace(mesh, "DG", 0)
     R = FunctionSpace(mesh, "R", 0)
     ml_ops = {
-        "sy": ml_operator(model_sy, function_space=Q),
-        "Hp": ml_operator(model_Hp, function_space=Q),
+        "sy": ml_operator(model_sy, function_space=Q, model_parameters=True),
+        "Hp": ml_operator(model_Hp, function_space=Q, model_parameters=True),
     }
     ml_params = {
         "sy": Function(R, name="ml_params_sy").assign(0.0),
@@ -34,9 +33,9 @@ def build_nonlocal_nn_damage_ml_ops(mesh, model_sy, model_Hp, model_phi):
     Q = FunctionSpace(mesh, "DG", 0)
     R = FunctionSpace(mesh, "R", 0)
     ml_ops = {
-        "sy": ml_operator(model_sy, function_space=Q),
-        "Hp": ml_operator(model_Hp, function_space=Q),
-        "phi": ml_operator(model_phi, function_space=Q),
+        "sy": ml_operator(model_sy, function_space=Q, model_parameters=True),
+        "Hp": ml_operator(model_Hp, function_space=Q, model_parameters=True),
+        "phi": ml_operator(model_phi, function_space=Q, model_parameters=True),
     }
     ml_params = {
         "sy": Function(R, name="ml_params_sy").assign(0.0),

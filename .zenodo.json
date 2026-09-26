@@ -1,7 +1,7 @@
 {
   "upload_type": "software",
   "title": "Reproducibility archive for \"Missing Physics Discovery through Fully Differentiable Finite Element-Based Machine Learning\"",
-  "description": "Firedrake patches (against pinned public commits) and the Python scripts, meshes, and data needed to reproduce the numerical examples of the paper \"Missing Physics Discovery through Fully Differentiable Finite Element-Based Machine Learning\".",
+  "description": "Python scripts, meshes, and data for the standard Firedrake release, needed to reproduce the numerical examples of the paper \"Missing Physics Discovery through Fully Differentiable Finite Element-Based Machine Learning\".",
   "license": "MIT",
   "access_right": "open",
   "creators": [

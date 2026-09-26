@@ -3,7 +3,6 @@ import numpy as np
 import torch
 from firedrake import *
 from firedrake.ml.pytorch import ml_operator, to_torch
-from firedrake.__future__ import interpolate
 
 from operators import TorchModelForE, IntegralMonotoneSigmaY, IntegralHTangent
 
@@ -134,9 +133,9 @@ def main():
         p.requires_grad_(False)
     model_Hp = IntegralHTangent(model_sy).double()
 
-    ml_ops = {"E": ml_operator(model_E, function_space=Q),
-              "sy": ml_operator(model_sy, function_space=Q),
-              "Hp": ml_operator(model_Hp, function_space=Q)}
+    ml_ops = {"E": ml_operator(model_E, function_space=Q, model_parameters=True),
+              "sy": ml_operator(model_sy, function_space=Q, model_parameters=True),
+              "Hp": ml_operator(model_Hp, function_space=Q, model_parameters=True)}
     ml_params = {"E": Function(R).assign(0.0), "sy": Function(R).assign(0.0), "Hp": Function(R).assign(0.0)}
 
     disp_gt, stress_gt, p_gt = torque_solver(mesh)

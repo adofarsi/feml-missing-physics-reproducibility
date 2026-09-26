@@ -3,7 +3,6 @@ import numpy as np
 import torch
 from firedrake import *
 from firedrake.ml.pytorch import ml_operator, fem_operator, to_torch
-from firedrake.__future__ import interpolate
 from firedrake.adjoint import (annotate_tape, continue_annotation, stop_annotating,
                                set_working_tape, get_working_tape, Control, ReducedFunctional)
 
@@ -90,7 +89,7 @@ def main():
     model = TorchModelForK().double()
     V = FunctionSpace(mesh, "CG", 1)
     R = FunctionSpace(mesh, "R", 0)
-    ml_op = ml_operator(model, function_space=V)
+    ml_op = ml_operator(model, function_space=V, model_parameters=True)
     ml_parameters = Function(R).assign(0.0)
     ml_parameters_t = to_torch(ml_parameters, requires_grad=True)
 
